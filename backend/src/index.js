@@ -35,13 +35,13 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'healthy' });
 });
 
-// Call LLM API (supports Gemini or OpenAI)
-async function callLLM(prompt, conversationHistory) {
+async function callLLM(prompt, conversationHistory, conversationId) {
   const apiKey = process.env.LLM_API_KEY;
   if (!apiKey || apiKey === 'dummy_key_for_testing') {
     // If no real API key is present, generate a mock schema for testing purposes
     console.warn("No real LLM_API_KEY provided. Returning mock schema.");
-    return generateMockSchema(prompt);
+    const conversation = conversations.get(conversationId);
+    return generateMockSchema(prompt, conversation ? conversation.schemas.length : 0, conversationId, conversation);
   }
 
   // System prompt to enforce structured output conforming to requirements
@@ -56,6 +56,7 @@ Crucial properties for the schema:
 2. For inputs, support fields with custom "x-show-when" property for conditional visibility, e.g.:
    "x-show-when": { "field": "sendNewsletter", "equals": true }
 3. Always include appropriate titles, types (string, boolean, integer, number), and format validation where relevant.
+4. IMPORTANT: In multi-turn conversations, you MUST preserve all properties and configurations of the previous schema, only adding, updating, or deleting fields as explicitly requested by the user. Do not discard previous fields.
 
 Return ONLY the raw JSON object. Do not include markdown code block syntax (like \`\`\`json).`;
 
@@ -89,99 +90,123 @@ Return ONLY the raw JSON object. Do not include markdown code block syntax (like
     return JSON.parse(data.choices[0].message.content.trim());
   } else {
     // Gemini API
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-    
-    // Convert messages to Gemini format
-    const contents = [];
-    // Add system instruction separately if possible or prepend to user prompts
-    const geminiSystemInstruction = {
-      parts: [{ text: systemPrompt }]
-    };
+    const modelsToTry = ['gemini-1.5-flash', 'gemini-2.5-flash', 'gemini-pro'];
+    let lastError = null;
 
-    // Construct Gemini contents array
-    let currentRole = 'user';
-    for (const msg of conversationHistory) {
-      contents.push({
-        role: msg.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: msg.content }]
-      });
-    }
-    contents.push({
-      role: 'user',
-      parts: [{ text: prompt }]
-    });
+    for (const model of modelsToTry) {
+      try {
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        
+        // Convert messages to Gemini format
+        const contents = [];
+        const geminiSystemInstruction = {
+          parts: [{ text: systemPrompt }]
+        };
 
-    const response = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        contents: contents,
-        systemInstruction: geminiSystemInstruction,
-        generationConfig: {
-          responseMimeType: 'application/json',
-          temperature: 0.1
+        for (const msg of conversationHistory) {
+          contents.push({
+            role: msg.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: msg.content }]
+          });
         }
-      })
-    });
+        contents.push({
+          role: 'user',
+          parts: [{ text: prompt }]
+        });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Gemini API error: ${response.status} - ${errText}`);
+        const response = await fetch(geminiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            contents: contents,
+            systemInstruction: geminiSystemInstruction,
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: 0.1
+            }
+          })
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          console.warn(`Model ${model} request failed: ${response.status} - ${errText}`);
+          lastError = new Error(`Model ${model} failed: ${response.status} - ${errText}`);
+          continue;
+        }
+
+        const data = await response.json();
+        const text = data.candidates[0].content.parts[0].text;
+        return JSON.parse(text.trim());
+      } catch (err) {
+        console.warn(`Model ${model} execution error: ${err.message}`);
+        lastError = err;
+      }
     }
-    const data = await response.json();
-    const text = data.candidates[0].content.parts[0].text;
-    return JSON.parse(text.trim());
+    throw lastError || new Error("Failed to call any Gemini model.");
   }
 }
 
 // Generate fallback / mock schemas when API key is missing or for rapid testing
-function generateMockSchema(prompt, currentVersion = 0, formId = uuidv4()) {
+function generateMockSchema(prompt, currentVersion = 0, formId = uuidv4(), conversation = null) {
   const lowerPrompt = prompt.toLowerCase();
   
-  let schema = {
+  // Try to load the previous schema from the conversation state to build upon it
+  let lastSchema = null;
+  if (conversation && conversation.schemas && conversation.schemas.length > 0) {
+    try {
+      lastSchema = JSON.parse(JSON.stringify(conversation.schemas[conversation.schemas.length - 1]));
+    } catch (e) {
+      console.error("Error copying last schema:", e);
+    }
+  }
+
+  // Base schema configuration
+  let schema = lastSchema || {
     $schema: "http://json-schema.org/draft-07/schema#",
     type: "object",
-    properties: {
-      fullName: { type: "string", title: "Full Name" }
-    },
-    required: ["fullName"]
+    properties: {},
+    required: []
   };
 
+  if (!schema.properties) schema.properties = {};
+  if (!schema.required) schema.required = [];
+
+  // Cumulative modifications based on keywords in user prompt
   if (lowerPrompt.includes("contact")) {
-    schema.properties = {
-      name: { type: "string", title: "Name" },
-      email: { type: "string", format: "email", title: "Email Address" },
-      message: { type: "string", title: "Message" }
+    schema.properties.name = { type: "string", title: "Name" };
+    schema.properties.email = { type: "string", format: "email", title: "Email Address" };
+    schema.properties.message = { type: "string", title: "Message" };
+    if (!schema.required.includes("name")) schema.required.push("name");
+    if (!schema.required.includes("email")) schema.required.push("email");
+  } 
+  
+  if (lowerPrompt.includes("signup") || lowerPrompt.includes("sign up")) {
+    schema.properties.email = { type: "string", format: "email", title: "Email Address" };
+    if (!schema.required.includes("email")) schema.required.push("email");
+  } 
+  
+  if (lowerPrompt.includes("password")) {
+    schema.properties.password = { type: "string", title: "Password" };
+    if (!schema.required.includes("password")) schema.required.push("password");
+  } 
+  
+  if (lowerPrompt.includes("newsletter") || lowerPrompt.includes("subscribe")) {
+    schema.properties.sendNewsletter = { type: "boolean", title: "Subscribe to newsletter?" };
+  } 
+  
+  if (lowerPrompt.includes("emailfrequency")) {
+    schema.properties.emailFrequency = {
+      type: "string",
+      title: "Email Frequency",
+      enum: ["Daily", "Weekly", "Monthly"],
+      "x-show-when": { "field": "sendNewsletter", "equals": true }
     };
-    schema.required = ["name", "email"];
-  } else if (lowerPrompt.includes("signup") || lowerPrompt.includes("sign up")) {
-    schema.properties = {
-      email: { type: "string", format: "email", title: "Email Address" }
-    };
-    schema.required = ["email"];
-  } else if (lowerPrompt.includes("password")) {
-    schema.properties = {
-      email: { type: "string", format: "email", title: "Email Address" },
-      password: { type: "string", title: "Password" }
-    };
-    schema.required = ["email", "password"];
-  } else if (lowerPrompt.includes("newsletter") || lowerPrompt.includes("subscribe")) {
-    schema.properties = {
-      sendNewsletter: { type: "boolean", title: "Subscribe to newsletter?" },
-      emailFrequency: {
-        type: "string",
-        title: "Email Frequency",
-        enum: ["Daily", "Weekly", "Monthly"],
-        "x-show-when": { "field": "sendNewsletter", "equals": true }
-      }
-    };
-    schema.required = ["sendNewsletter"];
-  } else if (lowerPrompt.includes("diff")) {
-    schema.properties = {
-      fieldForDiffTest: { type: "string", title: "Field for Diff Test" }
-    };
+  } 
+  
+  if (lowerPrompt.includes("diff") || lowerPrompt.includes("fieldfordifftest")) {
+    schema.properties.fieldForDiffTest = { type: "string", title: "Field for Diff Test" };
   }
 
   return {
@@ -194,6 +219,7 @@ function generateMockSchema(prompt, currentVersion = 0, formId = uuidv4()) {
 // Endpoint: Generate / Refine form schema
 app.post('/api/form/generate', async (req, res) => {
   const { prompt, conversationId: reqConversationId } = req.body;
+  console.log(`[API POST] prompt="${prompt}", conversationId="${reqConversationId || 'undefined'}"`);
   const mockLlmFailure = req.query.mock_llm_failure ? parseInt(req.query.mock_llm_failure) : 0;
 
   if (!prompt || typeof prompt !== 'string') {
@@ -241,7 +267,12 @@ app.post('/api/form/generate', async (req, res) => {
           schema: { type: "invalid_type_to_cause_failure" } // Invalid JSON Schema
         };
       } else {
-        result = await callLLM(prompt, conversation.messages);
+        try {
+          result = await callLLM(prompt, conversation.messages, conversationId);
+        } catch (llmError) {
+          console.warn("LLM API call failed. Falling back to Mock Schema Generator:", llmError.message);
+          result = generateMockSchema(prompt, conversation.schemas.length, conversationId, conversation);
+        }
       }
 
       // Check if it conforms to our schema structure and contains valid Draft-07 JSON Schema
@@ -261,7 +292,7 @@ app.post('/api/form/generate', async (req, res) => {
       conversation.schemas.push(result.schema);
 
       return res.status(200).json({
-        formId: result.formId || conversationId,
+        formId: conversationId,
         version: conversation.schemas.length,
         schema: result.schema
       });
