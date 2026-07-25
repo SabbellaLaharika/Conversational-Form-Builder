@@ -149,12 +149,18 @@ Return ONLY the raw JSON object. Do not include markdown code block syntax (like
 }
 
 // Generate fallback / mock schemas when API key is missing or for rapid testing
-function generateMockSchema(prompt, currentVersion = 0, formId = uuidv4(), conversation = null) {
+function generateMockSchema(prompt, currentVersion = 0, formId = uuidv4(), conversation = null, customBaseSchema = null) {
   const lowerPrompt = prompt.toLowerCase();
   
   // Try to load the previous schema from the conversation state to build upon it
   let lastSchema = null;
-  if (conversation && conversation.schemas && conversation.schemas.length > 0) {
+  if (customBaseSchema) {
+    try {
+      lastSchema = JSON.parse(JSON.stringify(customBaseSchema));
+    } catch (e) {
+      console.error("Error copying custom base schema:", e);
+    }
+  } else if (conversation && conversation.schemas && conversation.schemas.length > 0) {
     try {
       lastSchema = JSON.parse(JSON.stringify(conversation.schemas[conversation.schemas.length - 1]));
     } catch (e) {
@@ -218,8 +224,8 @@ function generateMockSchema(prompt, currentVersion = 0, formId = uuidv4(), conve
 
 // Endpoint: Generate / Refine form schema
 app.post('/api/form/generate', async (req, res) => {
-  const { prompt, conversationId: reqConversationId } = req.body;
-  console.log(`[API POST] prompt="${prompt}", conversationId="${reqConversationId || 'undefined'}"`);
+  const { prompt, conversationId: reqConversationId, version: reqVersion } = req.body;
+  console.log(`[API POST] prompt="${prompt}", conversationId="${reqConversationId || 'undefined'}", version="${reqVersion || 'latest'}"`);
   const mockLlmFailure = req.query.mock_llm_failure ? parseInt(req.query.mock_llm_failure) : 0;
 
   if (!prompt || typeof prompt !== 'string') {
@@ -234,7 +240,7 @@ app.post('/api/form/generate', async (req, res) => {
       conversationId: conversationId,
       questions: [
         'How many participants are expected for the meeting?',
-        'Do you require audio-visual equipment (projector, video conferencing, etc.)?',
+        'Do you require audio-visual equipment?',
         'What is the date and time range for the booking?'
       ]
     });
@@ -245,6 +251,18 @@ app.post('/api/form/generate', async (req, res) => {
     conversations.set(conversationId, { messages: [], schemas: [] });
   }
   const conversation = conversations.get(conversationId);
+
+  // Get the base schema and conversation history matching the requested version
+  let baseSchema = null;
+  let activeHistory = conversation.messages;
+
+  if (reqVersion !== undefined && reqVersion !== null) {
+    const versionNum = parseInt(reqVersion);
+    if (!isNaN(versionNum) && versionNum > 0 && versionNum <= conversation.schemas.length) {
+      baseSchema = conversation.schemas[versionNum - 1];
+      activeHistory = conversation.messages.slice(0, 2 * versionNum);
+    }
+  }
 
   // Implement mock LLM failures for testing retry mechanism
   let failuresToSimulate = mockLlmFailure;
@@ -268,10 +286,10 @@ app.post('/api/form/generate', async (req, res) => {
         };
       } else {
         try {
-          result = await callLLM(prompt, conversation.messages, conversationId);
+          result = await callLLM(prompt, activeHistory, conversationId);
         } catch (llmError) {
           console.warn("LLM API call failed. Falling back to Mock Schema Generator:", llmError.message);
-          result = generateMockSchema(prompt, conversation.schemas.length, conversationId, conversation);
+          result = generateMockSchema(prompt, conversation.schemas.length, conversationId, conversation, baseSchema);
         }
       }
 

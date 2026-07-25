@@ -20,6 +20,8 @@ export default function App() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [currentSchema, setCurrentSchema] = useState<any>(null);
   const [previousSchema, setPreviousSchema] = useState<any>(null);
+  const [schemasHistory, setSchemasHistory] = useState<{ version: number; schema: any }[]>([]);
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedText, setCopiedText] = useState<string | null>(null);
@@ -46,6 +48,7 @@ export default function App() {
         body: JSON.stringify({
           prompt: text,
           conversationId: conversationId || undefined,
+          version: selectedVersion || undefined,
         }),
       });
 
@@ -80,6 +83,20 @@ export default function App() {
           setPreviousSchema(currentSchema);
         }
         setCurrentSchema(data.schema);
+        
+        // Update schemas history timeline
+        setSchemasHistory((prev) => {
+          if (!conversationId || data.version === 1) {
+            return [{ version: 1, schema: data.schema }];
+          }
+          const nextVersion = data.version || (prev.length + 1);
+          if (prev.some((item) => item.version === nextVersion)) {
+            return prev;
+          }
+          return [...prev, { version: nextVersion, schema: data.schema }];
+        });
+        setSelectedVersion(data.version || 1);
+
         setMessages((prev) => [
           ...prev,
           {
@@ -275,9 +292,50 @@ export default function MyForm() {
 
         {/* Form Renderer Pane */}
         <section className="pane form-renderer-pane" data-testid="form-renderer-pane">
-          <div className="pane-header">
-            <Code className="pane-header-icon" />
-            <h2>Live Form Preview</h2>
+          <div className="pane-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Code className="pane-header-icon" />
+              <h2>Live Form Preview</h2>
+            </div>
+            {schemasHistory.length > 1 && (
+              <div className="version-selector-container" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>Version:</span>
+                <select
+                  value={selectedVersion || ''}
+                  onChange={(e) => {
+                    const ver = parseInt(e.target.value);
+                    setSelectedVersion(ver);
+                    const selectedItem = schemasHistory.find(h => h.version === ver);
+                    const prevItem = schemasHistory.find(h => h.version === ver - 1);
+                    if (selectedItem) {
+                      setCurrentSchema(selectedItem.schema);
+                    }
+                    if (prevItem) {
+                      setPreviousSchema(prevItem.schema);
+                    } else {
+                      setPreviousSchema(null);
+                    }
+                  }}
+                  style={{
+                    backgroundColor: '#1e293b',
+                    border: '1px solid #334155',
+                    color: '#22d3ee',
+                    borderRadius: '4px',
+                    padding: '3px 8px',
+                    fontSize: '0.85rem',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    outline: 'none'
+                  }}
+                >
+                  {schemasHistory.map((item) => (
+                    <option key={item.version} value={item.version}>
+                      v{item.version} {item.version === schemasHistory[schemasHistory.length - 1].version ? '(Latest)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           <div className="pane-content-scroll">
