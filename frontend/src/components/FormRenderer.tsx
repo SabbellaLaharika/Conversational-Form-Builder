@@ -1,5 +1,16 @@
 import React, { useState, useEffect } from 'react';
 
+interface ConditionalRule {
+  field?: string;
+  equals?: any;
+  notEquals?: any;
+  greaterThan?: number;
+  lessThan?: number;
+  in?: any[];
+  and?: ConditionalRule[];
+  or?: ConditionalRule[];
+}
+
 interface SchemaProperty {
   type?: string;
   title?: string;
@@ -7,10 +18,7 @@ interface SchemaProperty {
   enum?: string[];
   minimum?: number;
   maximum?: number;
-  'x-show-when'?: {
-    field: string;
-    equals: any;
-  };
+  'x-show-when'?: ConditionalRule;
   description?: string;
 }
 
@@ -67,14 +75,50 @@ export const FormRenderer: React.FC<FormRendererProps> = ({ schema }) => {
     );
   }
 
+  // Recursive evaluator supporting primitive equality, numeric operators, and composite AND/OR rules
+  const evaluateRule = (rule: ConditionalRule, currentData: Record<string, any>): boolean => {
+    if (!rule) return true;
+
+    // Composite AND rule: all nested rules must evaluate to true
+    if (Array.isArray(rule.and)) {
+      return rule.and.every((subRule) => evaluateRule(subRule, currentData));
+    }
+
+    // Composite OR rule: at least one nested rule must evaluate to true
+    if (Array.isArray(rule.or)) {
+      return rule.or.some((subRule) => evaluateRule(subRule, currentData));
+    }
+
+    // Primitive field rule evaluation
+    if (rule.field) {
+      const val = currentData[rule.field];
+
+      if (rule.equals !== undefined) {
+        return val === rule.equals;
+      }
+      if (rule.notEquals !== undefined) {
+        return val !== rule.notEquals;
+      }
+      if (rule.greaterThan !== undefined) {
+        return typeof val === 'number' && val > rule.greaterThan;
+      }
+      if (rule.lessThan !== undefined) {
+        return typeof val === 'number' && val < rule.lessThan;
+      }
+      if (Array.isArray(rule.in)) {
+        return rule.in.includes(val);
+      }
+    }
+
+    return true;
+  };
+
   // Determine if a field should be shown based on "x-show-when" property
   const shouldShowField = (prop: SchemaProperty) => {
     if (!prop['x-show-when']) {
       return true;
     }
-    const condition = prop['x-show-when'];
-    const dependentValue = formData[condition.field];
-    return dependentValue === condition.equals;
+    return evaluateRule(prop['x-show-when'], formData);
   };
 
   return (

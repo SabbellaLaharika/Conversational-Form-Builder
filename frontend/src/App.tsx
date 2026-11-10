@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { FormRenderer } from './components/FormRenderer';
-import { Send, Download, Copy, Code, Terminal, MessageSquare, RefreshCw, AlertCircle } from 'lucide-react';
+import { Send, Download, Copy, Code, Terminal, MessageSquare, RefreshCw, AlertCircle, Sparkles } from 'lucide-react';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -17,6 +17,7 @@ export default function App() {
     },
   ]);
   const [inputPrompt, setInputPrompt] = useState('');
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({});
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [currentSchema, setCurrentSchema] = useState<any>(null);
   const [previousSchema, setPreviousSchema] = useState<any>(null);
@@ -111,6 +112,22 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleClarificationSubmit = (msgIndex: number, questions: string[]) => {
+    const answeredParts: string[] = [];
+    questions.forEach((q, idx) => {
+      const key = `${msgIndex}-${idx}`;
+      const answer = clarificationAnswers[key]?.trim();
+      if (answer) {
+        answeredParts.push(`- ${q}: ${answer}`);
+      } else {
+        answeredParts.push(`- ${q}: (Use best-practice defaults)`);
+      }
+    });
+
+    const promptText = `Build the form with these specifications:\n${answeredParts.join('\n')}`;
+    handleSendMessage(promptText);
   };
 
   const getDiffText = () => {
@@ -233,20 +250,44 @@ export default function MyForm() {
                 <div className={`message-bubble ${msg.role}`}>
                   <p>{msg.content}</p>
                   {msg.questions && msg.questions.length > 0 && (
-                    <ul className="clarification-list">
-                      {msg.questions.map((q, idx) => (
-                        <li key={idx} className="clarification-item">
-                          <button
-                            onClick={() => {
-                              setInputPrompt(`Answer: ${q}`);
-                            }}
-                            className="clarification-btn-helper"
-                          >
-                            {q}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="clarification-form-card">
+                      {msg.questions.map((q, idx) => {
+                        const fieldKey = `${index}-${idx}`;
+                        return (
+                          <div key={idx} className="clarification-field">
+                            <label className="clarification-label">{q}</label>
+                            <input
+                              type="text"
+                              className="clarification-input"
+                              placeholder="Type your answer here..."
+                              value={clarificationAnswers[fieldKey] || ''}
+                              onChange={(e) =>
+                                setClarificationAnswers((prev) => ({
+                                  ...prev,
+                                  [fieldKey]: e.target.value,
+                                }))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  handleClarificationSubmit(index, msg.questions!);
+                                }
+                              }}
+                            />
+                          </div>
+                        );
+                      })}
+                      <div className="clarification-actions">
+                        <button
+                          type="button"
+                          className="clarification-submit-btn"
+                          disabled={isLoading}
+                          onClick={() => handleClarificationSubmit(index, msg.questions!)}
+                        >
+                          <Sparkles size={15} />
+                          Build Form with Answers
+                        </button>
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>
