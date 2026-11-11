@@ -13,11 +13,11 @@
 [![Groq](https://img.shields.io/badge/Groq-gpt--oss--120b-f55036?logo=fastapi&logoColor=white)](https://groq.com/)
 [![License](https://img.shields.io/badge/License-MIT-22c55e)](LICENSE)
 
-<p align="center">
-  A full-stack application featuring a conversational AI agent that generates and refines complex web forms based on natural language prompts, enforcing strict JSON Schema (Draft-07) contracts.
-</p>
-
 </div>
+
+<p align="left">
+  &emsp;&emsp;A full-stack application featuring a conversational AI agent that generates and refines complex web forms based on natural language prompts, enforcing strict JSON Schema (Draft-07) contracts.
+</p>
 
 ---
 
@@ -112,51 +112,58 @@ flowchart TB
 %%{init: {
   'theme': 'base',
   'themeVariables': {
+    'fontSize': '16px',
+    'actorFontSize': '16px',
+    'noteFontSize': '15px',
+    'messageFontSize': '15px',
+    'actorFontWeight': '700',
+    'noteFontWeight': '600',
+    'messageFontWeight': '500',
     'primaryColor': '#eff6ff',
-    'primaryTextColor': '#1e3a8a',
-    'primaryBorderColor': '#3b82f6',
+    'primaryTextColor': '#0f172a',
+    'primaryBorderColor': '#2563eb',
     'lineColor': '#2563eb',
     'secondaryColor': '#f0fdf4',
     'tertiaryColor': '#fff7ed',
     'noteBkgColor': '#fef3c7',
-    'noteTextColor': '#92400e',
-    'noteBorderColor': '#f59e0b',
+    'noteTextColor': '#78350f',
+    'noteBorderColor': '#d97706',
     'actorBkg': '#dbeafe',
-    'actorTextColor': '#1e40af',
-    'actorBorder': '#3b82f6',
+    'actorTextColor': '#1e3a8a',
+    'actorBorder': '#2563eb',
     'signalColor': '#1d4ed8',
-    'signalTextColor': '#1e3a8a',
+    'signalTextColor': '#0f172a',
     'labelBoxBkgColor': '#eff6ff',
     'labelBoxBorderColor': '#3b82f6',
     'labelTextColor': '#1e3a8a',
+    'loopTextColor': '#1e3a8a',
+    'altTextColor': '#1e3a8a',
     'sequenceNumberColor': '#ffffff'
   }
 }}%%
 sequenceDiagram
     autonumber
     actor User as 👤 User
-    participant Chat as 💬 Chat Pane (:3000)
+    participant UI as ⚛️ React UI (:3000)
     participant API as 🚀 Express API (:8080)
-    participant Store as 💾 Session Store (Map)
-    participant LLM as 🤖 Model Client (Gemini / Groq)
+    participant LLM as 🤖 Model (Gemini / Groq)
     participant Ajv as 🛡️ Ajv Validator (Draft-07)
-    participant Renderer as 📋 Form Renderer (:3000)
 
-    User->>Chat: Enters natural language prompt
-    Chat->>API: POST /api/form/generate { prompt, conversationId, version }
+    User->>UI: Enters natural language prompt
+    UI->>API: POST /api/form/generate<br/>{ prompt, conversationId, version }
 
     rect rgb(238, 242, 255)
     Note over API: Phase 1: Ambiguity Evaluation & Prevention
     API->>API: Inspect prompt for missing domain specifics
     alt Prompt is underspecified (e.g. room booking without attendee count)
-        API-->>Chat: HTTP 200 OK { status: "clarification_needed", questions: [...] }
-        Chat-->>User: Renders interactive clarification question card in chat
+        API-->>UI: HTTP 200 OK<br/>{ status: "clarification_needed", questions }
+        UI-->>User: Renders interactive inline Q&A card
     end
     end
 
     rect rgb(236, 253, 245)
-    Note over API, Store: Phase 2: Context Retrieval & Version Slicing
-    API->>Store: Retrieve conversation session history
+    Note over API: Phase 2: Context Retrieval & Version Slicing
+    API->>API: Retrieve session history from in-memory Map
     alt Historical version requested (versionNum)
         API->>API: Slice history to 2 * versionNum & load base schema
     else Latest iteration
@@ -167,24 +174,23 @@ sequenceDiagram
     rect rgb(254, 243, 199)
     Note over API, Ajv: Phase 3: Structured Inference & Self-Healing Retry Loop (Attempts <= 3)
     loop Attempts 1 to 3 (Initial + Up to 2 Retries)
-        API->>LLM: callLLM(prompt, activeHistory, conversationId, correctiveFeedback)
+        API->>LLM: Request JSON Schema<br/>(prompt, history, feedback)
         LLM-->>API: Returns raw JSON Schema object
         API->>Ajv: ajv.validateSchema(result.schema)
 
         alt Valid Draft-07 Schema
             Ajv-->>API: Pass (true)
-            API->>Store: Persist updated message turn and append schema version
-            API-->>Renderer: HTTP 200 OK { formId, version, schema }
-            Renderer-->>User: Mounts reactive inputs, updates diff panel & export suite
+            API->>API: Persist message turn & append schema version
+            API-->>UI: HTTP 200 OK<br/>{ formId, version, schema }
+            UI-->>User: Renders live form inputs, diff & export options
         else Invalid Structure
-            Ajv-->>API: Fail (ajv.errorsText())
-            API->>API: Record compiler diagnostics in lastError
-            Note over API, LLM: Self-Healing: Injects exact compiler errors into next retry prompt
+            Ajv-->>API: Fail (compiler diagnostics)
+            API->>LLM: Self-Healing Retry (injects compiler diagnostics)
         end
     end
     opt All 3 Retries Exhausted
-        API-->>Chat: HTTP 500 Error { error: "Schema generation failed...", details: lastError }
-        Chat-->>User: Displays diagnostic error banner
+        API-->>UI: HTTP 500 Error<br/>{ error: "Generation failed...", details }
+        UI-->>User: Displays diagnostic error banner
     end
     end
 ```
